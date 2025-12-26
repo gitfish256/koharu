@@ -8,7 +8,8 @@ export const OPENAI_DEFAULT_MODEL = 'gpt-4o-mini'
 
 export const OPENAI_COMPATIBLE_MODEL: LlmModelInfo = {
   id: OPENAI_COMPATIBLE_MODEL_ID,
-  languages: [],
+  // Allow users to pick a target language for OpenAI-compatible backends so we can adjust defaults (e.g. fonts).
+  languages: ['zh', 'ja', 'ko', 'en'],
 }
 
 export const isOpenAIModel = (modelId?: string) =>

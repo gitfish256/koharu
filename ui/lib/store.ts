@@ -145,6 +145,76 @@ const pickLanguage = (
 
 let llmReadyCheckInFlight: Promise<boolean> | null = null
 
+type StoredLlmConfig = {
+  selectedModel?: string
+  selectedLanguage?: string
+  openAIEndpoint?: string
+  openAIApiKey?: string
+  openAIPrompt?: string
+  openAIModel?: string
+}
+
+const LLM_CONFIG_STORAGE_KEY = 'koharu.llm.config'
+
+const loadLlmConfig = (): StoredLlmConfig => {
+  if (typeof window === 'undefined') return {}
+  try {
+    const raw = localStorage.getItem(LLM_CONFIG_STORAGE_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    return typeof parsed === 'object' && parsed !== null ? parsed : {}
+  } catch (_) {
+    return {}
+  }
+}
+
+const dedupeFonts = (fonts: string[]) => {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const font of fonts) {
+    const key = font.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push(font)
+  }
+  return result
+}
+
+const preferredFontsForLanguage = (language?: string): string[] | undefined => {
+  if (!language) return undefined
+  const lang = language.toLowerCase()
+  if (lang.startsWith('zh')) {
+    return [
+      'Microsoft YaHei',
+      'Microsoft JhengHei',
+      'SimHei',
+      'SimSun',
+      'PingFang SC',
+      'Source Han Sans SC',
+      'Noto Sans CJK SC',
+    ]
+  }
+  if (lang.startsWith('ja')) {
+    return [
+      'Yu Gothic',
+      'Meiryo',
+      'Hiragino Sans',
+      'Source Han Sans JP',
+      'Noto Sans CJK JP',
+    ]
+  }
+  if (lang.startsWith('ko')) {
+    return [
+      'Malgun Gothic',
+      'Nanum Gothic',
+      'Apple SD Gothic Neo',
+      'Source Han Sans KR',
+      'Noto Sans CJK KR',
+    ]
+  }
+  return undefined
+}
+
 // A mixin of application state, ui state and actions.
 type AppState = OperationSlice & {
   documents: Document[]
@@ -245,6 +315,8 @@ type AppState = OperationSlice & {
 }
 
 export const useAppStore = create<AppState>((set, get) => {
+  const persistedLlmConfig = loadLlmConfig()
+
   const isOpenAICompatible = () => isOpenAIModel(get().llmSelectedModel)
 
   const syncOpenAIReady = () => {
@@ -253,6 +325,31 @@ export const useAppStore = create<AppState>((set, get) => {
     const ready = isOpenAIConfigured(llmOpenAIEndpoint, llmOpenAIApiKey)
     set({ llmReady: ready, llmLoading: false })
     return true
+  }
+
+  const persistLlmConfig = () => {
+    if (typeof window === 'undefined') return
+    try {
+      const {
+        llmSelectedModel,
+        llmSelectedLanguage,
+        llmOpenAIEndpoint,
+        llmOpenAIApiKey,
+        llmOpenAIPrompt,
+        llmOpenAIModel,
+      } = get()
+      localStorage.setItem(
+        LLM_CONFIG_STORAGE_KEY,
+        JSON.stringify({
+          selectedModel: llmSelectedModel,
+          selectedLanguage: llmSelectedLanguage,
+          openAIEndpoint: llmOpenAIEndpoint,
+          openAIApiKey: llmOpenAIApiKey,
+          openAIPrompt: llmOpenAIPrompt,
+          openAIModel: llmOpenAIModel,
+        }),
+      )
+    } catch (_) {}
   }
 
   const generateWithOpenAI = async (
@@ -265,6 +362,7 @@ export const useAppStore = create<AppState>((set, get) => {
       llmOpenAIApiKey,
       llmOpenAIPrompt,
       llmOpenAIModel,
+      llmSelectedLanguage,
     } = get()
     const doc = documents[index]
     if (!doc) return
@@ -297,7 +395,37 @@ export const useAppStore = create<AppState>((set, get) => {
       return { ...block, translation: translated }
     })
 
-    return { ...doc, textBlocks: updatedBlocks }
+    const preferredFonts = preferredFontsForLanguage(llmSelectedLanguage)
+    const normalizedBlocks =
+      preferredFonts && preferredFonts.length
+        ? updatedBlocks.map((block) => {
+            const currentFonts = block.style?.fontFamilies ?? []
+            const hasCjk =
+              currentFonts.length > 0 &&
+              !['segoe ui', 'arial', 'helvetica'].includes(
+                currentFonts[0]?.toLowerCase(),
+              )
+            if (hasCjk) return block
+
+            const mergedFonts = dedupeFonts([
+              ...preferredFonts,
+              ...currentFonts,
+            ])
+            const nextStyle = {
+              ...block.style,
+              fontFamilies: mergedFonts,
+            }
+            return { ...block, style: nextStyle }
+          })
+        : updatedBlocks
+
+    // Persist the generated translations into the backend document store.
+    // Otherwise, the subsequent "render" call will load the backend document
+    // (which still has empty translations) and overwrite the UI state.
+    return await invoke<Document>('update_text_blocks', {
+      index,
+      textBlocks: normalizedBlocks,
+    })
   }
 
   return {
@@ -316,14 +444,15 @@ export const useAppStore = create<AppState>((set, get) => {
     renderEffect: 'normal',
     availableFonts: [],
     llmModels: [],
-    llmSelectedModel: undefined,
-    llmSelectedLanguage: undefined,
+    llmSelectedModel: persistedLlmConfig.selectedModel,
+    llmSelectedLanguage: persistedLlmConfig.selectedLanguage,
     llmReady: false,
     llmLoading: false,
-    llmOpenAIEndpoint: '',
-    llmOpenAIApiKey: '',
-    llmOpenAIPrompt: t('llm.openaiPromptPlaceholder'),
-    llmOpenAIModel: OPENAI_DEFAULT_MODEL,
+    llmOpenAIEndpoint: persistedLlmConfig.openAIEndpoint ?? '',
+    llmOpenAIApiKey: persistedLlmConfig.openAIApiKey ?? '',
+    llmOpenAIPrompt:
+      persistedLlmConfig.openAIPrompt ?? t('llm.openaiPromptPlaceholder'),
+    llmOpenAIModel: persistedLlmConfig.openAIModel ?? OPENAI_DEFAULT_MODEL,
     operation: undefined,
     hydrateDocuments: (docs: Document[]) => {
       set({
@@ -565,6 +694,7 @@ export const useAppStore = create<AppState>((set, get) => {
           llmSelectedModel: nextModel,
           llmSelectedLanguage: nextLanguage,
         })
+        persistLlmConfig()
         syncOpenAIReady()
       } catch (_) {}
     },
@@ -581,6 +711,7 @@ export const useAppStore = create<AppState>((set, get) => {
         llmLoading: false,
         llmReady: false,
       })
+      persistLlmConfig()
       syncOpenAIReady()
     },
     llmSetSelectedLanguage: (language: string) => {
@@ -590,6 +721,7 @@ export const useAppStore = create<AppState>((set, get) => {
       )
       if (!languages.includes(language)) return
       set({ llmSelectedLanguage: language })
+      persistLlmConfig()
     },
     llmToggleLoadUnload: async () => {
       if (isOpenAICompatible()) {
@@ -693,18 +825,22 @@ export const useAppStore = create<AppState>((set, get) => {
     },
     setLlmOpenAIEndpoint: (endpoint: string) => {
       set({ llmOpenAIEndpoint: endpoint })
+      persistLlmConfig()
       syncOpenAIReady()
     },
     setLlmOpenAIApiKey: (apiKey: string) => {
       set({ llmOpenAIApiKey: apiKey })
+      persistLlmConfig()
       syncOpenAIReady()
     },
     setLlmOpenAIPrompt: (prompt: string) => {
       set({ llmOpenAIPrompt: prompt })
+      persistLlmConfig()
       syncOpenAIReady()
     },
     setLlmOpenAIModel: (model: string) => {
       set({ llmOpenAIModel: model })
+      persistLlmConfig()
       syncOpenAIReady()
     },
 

@@ -18,16 +18,19 @@ use crate::{
 pub struct Renderer {
     fontbook: Arc<Mutex<FontBook>>,
     renderer: WgpuRenderer,
+    text_fallbacks: Vec<Font>,
     symbol_fallbacks: Vec<Font>,
 }
 
 impl Renderer {
     pub fn new() -> Result<Self> {
         let mut fontbook = FontBook::new();
+        let text_fallbacks = load_text_fallbacks(&mut fontbook);
         let symbol_fallbacks = load_symbol_fallbacks(&mut fontbook);
         Ok(Self {
             fontbook: Arc::new(Mutex::new(fontbook)),
             renderer: WgpuRenderer::new()?,
+            text_fallbacks,
             symbol_fallbacks,
         })
     }
@@ -119,6 +122,7 @@ impl Renderer {
             .unwrap_or([0, 0, 0, 255]);
         let writing_mode = writing_mode(text_block);
         let mut layout = TextLayout::new(&font, None)
+            .with_fallback_fonts(&self.text_fallbacks)
             .with_fallback_fonts(&self.symbol_fallbacks)
             .with_max_height(text_block.height)
             .with_max_width(text_block.width)
@@ -210,6 +214,31 @@ fn center_layout_horizontally(layout: &mut LayoutRun<'_>, container_width: f32) 
         }
     }
     layout.width = target_width;
+}
+
+fn load_text_fallbacks(fontbook: &mut FontBook) -> Vec<Font> {
+    // Prefer CJK-capable fonts so Chinese/Japanese glyphs render even if the primary font lacks coverage.
+    let props = Properties::default();
+    let candidates = [
+        "Microsoft YaHei",
+        "Microsoft YaHei UI",
+        "Microsoft JhengHei",
+        "SimHei",
+        "SimSun",
+        "Noto Sans CJK SC",
+        "Noto Sans CJK TC",
+        "Source Han Sans SC",
+        "Source Han Sans TC",
+        "PingFang SC",
+        "PingFang TC",
+    ];
+    let mut fonts = Vec::new();
+    for name in candidates {
+        if let Ok(font) = fontbook.query(&[FamilyName::Title(name.to_string())], &props) {
+            fonts.push(font);
+        }
+    }
+    fonts
 }
 
 fn load_symbol_fallbacks(fontbook: &mut FontBook) -> Vec<Font> {
